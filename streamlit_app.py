@@ -90,32 +90,37 @@ st.markdown("""
 st.title("🗳️ VA Polling Place Validator")
 st.markdown("Validate Virginia polling place assignments against official VA elections data.")
 
-# Sidebar for settings
-with st.sidebar:
-    st.header("⚙️ Settings")
+# API Key Section
+st.header("🔑 API Key")
+
+api_key = st.text_input(
+    "Google Civic API Key",
+    type="password",
+    help="Get a free key at console.cloud.google.com/apis/credentials"
+)
+
+if not api_key:
+    st.info("👆 Enter your API key to enable fast validation")
     
-    api_key = st.text_input(
-        "Google Civic API Key",
-        type="password",
-        help="Get a free key at console.cloud.google.com/apis/credentials"
-    )
-    
-    if not api_key:
-        st.info("👆 Enter your API key to enable fast validation (~10x faster)")
+    with st.expander("How to get a free API key (takes 2 minutes)"):
+        st.markdown("""
+        1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+        2. Create a project (or select existing)
+        3. Click **"+ CREATE CREDENTIALS"** → **"API key"**
+        4. Copy the key and paste it above
+        5. [Enable Civic Info API](https://console.cloud.google.com/apis/library/civicinfo.googleapis.com)
         
-        with st.expander("How to get a free API key"):
-            st.markdown("""
-            1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-            2. Create a project (or select existing)
-            3. Click **"+ CREATE CREDENTIALS"** → **"API key"**
-            4. Copy the key and paste it above
-            5. [Enable Civic Info API](https://console.cloud.google.com/apis/library/civicinfo.googleapis.com)
-            
-            **Free tier:** 25,000 requests/day
-            """)
-    
-    st.divider()
-    
+        **Free tier:** 25,000 requests/day
+        """)
+
+st.divider()
+
+# Settings Section
+st.header("⚙️ Settings")
+
+col1, col2 = st.columns(2)
+
+with col1:
     match_threshold = st.slider(
         "Match Threshold (%)",
         min_value=50,
@@ -123,7 +128,8 @@ with st.sidebar:
         value=85,
         help="Minimum fuzzy match score to consider a match"
     )
-    
+
+with col2:
     rate_limit = st.slider(
         "API Rate Limit (req/sec)",
         min_value=1,
@@ -132,7 +138,9 @@ with st.sidebar:
         help="Requests per second (higher = faster but may hit limits)"
     )
 
-# Main content
+st.divider()
+
+# Upload Section
 st.header("📁 Upload CSV File")
 
 uploaded_file = st.file_uploader(
@@ -158,7 +166,7 @@ if uploaded_file is not None:
             est_time = f"~{int(est_seconds)} seconds" if est_seconds < 60 else f"~{est_seconds/60:.1f} minutes"
             st.info(f"⚡ **API Mode:** Estimated time: {est_time}")
         else:
-            st.warning("⚠️ No API key provided. Please add one in the sidebar to run validation.")
+            st.warning("⚠️ No API key provided. Please add one above to run validation.")
         
         # Validate button
         if api_key:
