@@ -55,37 +55,72 @@
 
         <!-- Config Section (hidden by default) -->
         <div id="config-section" class="hidden mb-8 bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-            <div class="flex items-center gap-3 mb-6">
-                <div class="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
-                    <i data-lucide="file-check" class="w-5 h-5 text-green-600"></i>
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
+                        <i data-lucide="file-check" class="w-5 h-5 text-green-600"></i>
+                    </div>
+                    <div>
+                        <h3 id="file-name" class="font-semibold text-gray-900">filename.csv</h3>
+                        <p id="record-count" class="text-sm text-gray-500">0 records</p>
+                    </div>
                 </div>
-                <div>
-                    <h3 id="file-name" class="font-semibold text-gray-900">filename.csv</h3>
-                    <p id="record-count" class="text-sm text-gray-500">0 records</p>
+                <div id="time-estimate" class="text-right">
+                    <p class="text-sm font-medium text-gray-700">Est. time</p>
+                    <p id="est-time-value" class="text-lg font-bold text-blue-600">~5 sec</p>
                 </div>
             </div>
 
             <!-- API Mode Toggle -->
-            <div class="mb-6 p-4 bg-blue-50 rounded-xl border border-blue-200">
+            <div class="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
                 <div class="flex items-center justify-between mb-3">
                     <div class="flex items-center gap-2">
                         <i data-lucide="zap" class="w-5 h-5 text-blue-600"></i>
                         <span class="font-medium text-gray-900">Fast Mode (API)</span>
-                        <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">10x faster</span>
+                        <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">10x faster</span>
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" id="use-api" class="sr-only peer">
+                        <input type="checkbox" id="use-api" class="sr-only peer" checked>
                         <div class="w-11 h-6 bg-gray-200 peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                     </label>
                 </div>
-                <div id="api-key-section" class="hidden">
+                <div id="api-key-section">
                     <label class="block text-sm font-medium text-gray-700 mb-2">Google Civic API Key</label>
-                    <input type="password" id="api-key" placeholder="Enter your API key" 
-                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                    <p class="text-xs text-gray-500 mt-1">
-                        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-blue-600 hover:underline">Get an API key</a> 
-                        from Google Cloud Console (free, 25k requests/day)
-                    </p>
+                    <div class="flex gap-2">
+                        <input type="password" id="api-key" placeholder="Enter your API key (e.g., AIzaSy...)" 
+                               class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <button id="toggle-key-visibility" type="button" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                            <i data-lucide="eye" class="w-5 h-5 text-gray-500"></i>
+                        </button>
+                        <button id="save-key-btn" type="button" class="px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 text-sm font-medium text-gray-700">
+                            Save
+                        </button>
+                    </div>
+                    <div class="flex items-center gap-1 mt-2">
+                        <input type="checkbox" id="remember-key" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <label for="remember-key" class="text-xs text-gray-500">Remember API key on this device</label>
+                    </div>
+                    
+                    <!-- API Key Setup Instructions -->
+                    <details class="mt-3">
+                        <summary class="text-sm text-blue-600 hover:text-blue-800 cursor-pointer font-medium">
+                            Need an API key? (Free, takes 2 minutes)
+                        </summary>
+                        <div class="mt-2 p-3 bg-white rounded-lg border border-gray-200 text-sm">
+                            <ol class="list-decimal list-inside space-y-2 text-gray-600">
+                                <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-blue-600 hover:underline">Google Cloud Console</a></li>
+                                <li>Create a project (or select existing)</li>
+                                <li>Click <strong>"+ CREATE CREDENTIALS"</strong> → <strong>"API key"</strong></li>
+                                <li>Copy the key and paste it above</li>
+                                <li>Enable the API: <a href="https://console.cloud.google.com/apis/library/civicinfo.googleapis.com" target="_blank" class="text-blue-600 hover:underline">Enable Civic Info API</a></li>
+                            </ol>
+                            <p class="mt-2 text-xs text-gray-500">Free tier: 25,000 requests/day (enough for ~500k records/month)</p>
+                        </div>
+                    </details>
+                </div>
+                <div id="browser-mode-notice" class="hidden text-sm text-gray-600 mt-2">
+                    <i data-lucide="info" class="w-4 h-4 inline"></i>
+                    Browser mode is slower (~5 sec/record) but doesn't require an API key
                 </div>
             </div>
 
@@ -238,20 +273,65 @@
         // API Mode Toggle
         const useApiCheckbox = document.getElementById('use-api');
         const apiKeySection = document.getElementById('api-key-section');
+        const browserModeNotice = document.getElementById('browser-mode-notice');
         const delaySection = document.getElementById('delay-section');
         const rateLimitSection = document.getElementById('rate-limit-section');
+        const apiKeyInput = document.getElementById('api-key');
+        const rememberKeyCheckbox = document.getElementById('remember-key');
+        const toggleKeyVisibility = document.getElementById('toggle-key-visibility');
+        const saveKeyBtn = document.getElementById('save-key-btn');
 
-        useApiCheckbox.addEventListener('change', () => {
+        // Load saved API key from localStorage
+        const savedApiKey = localStorage.getItem('va_validator_api_key');
+        if (savedApiKey) {
+            apiKeyInput.value = savedApiKey;
+            rememberKeyCheckbox.checked = true;
+        }
+
+        // Toggle API key visibility
+        toggleKeyVisibility.addEventListener('click', () => {
+            const isPassword = apiKeyInput.type === 'password';
+            apiKeyInput.type = isPassword ? 'text' : 'password';
+            toggleKeyVisibility.innerHTML = isPassword 
+                ? '<i data-lucide="eye-off" class="w-5 h-5 text-gray-500"></i>'
+                : '<i data-lucide="eye" class="w-5 h-5 text-gray-500"></i>';
+            lucide.createIcons();
+        });
+
+        // Save API key
+        saveKeyBtn.addEventListener('click', () => {
+            if (rememberKeyCheckbox.checked && apiKeyInput.value) {
+                localStorage.setItem('va_validator_api_key', apiKeyInput.value);
+                saveKeyBtn.textContent = 'Saved!';
+                saveKeyBtn.classList.add('bg-green-100', 'text-green-700');
+                setTimeout(() => {
+                    saveKeyBtn.textContent = 'Save';
+                    saveKeyBtn.classList.remove('bg-green-100', 'text-green-700');
+                }, 2000);
+            } else if (!rememberKeyCheckbox.checked) {
+                localStorage.removeItem('va_validator_api_key');
+                saveKeyBtn.textContent = 'Cleared';
+                setTimeout(() => { saveKeyBtn.textContent = 'Save'; }, 2000);
+            }
+        });
+
+        // Initialize UI based on API mode state
+        function updateApiModeUI() {
             if (useApiCheckbox.checked) {
                 apiKeySection.classList.remove('hidden');
+                browserModeNotice.classList.add('hidden');
                 delaySection.classList.add('hidden');
                 rateLimitSection.classList.remove('hidden');
             } else {
                 apiKeySection.classList.add('hidden');
+                browserModeNotice.classList.remove('hidden');
                 delaySection.classList.remove('hidden');
                 rateLimitSection.classList.add('hidden');
             }
-        });
+        }
+
+        useApiCheckbox.addEventListener('change', updateApiModeUI);
+        updateApiModeUI(); // Initialize on load
 
         // Drag and drop handlers
         dropZone.addEventListener('click', () => fileInput.click());
@@ -281,6 +361,36 @@
             if (file) handleFile(file);
         });
 
+        let currentRecordCount = 0;
+
+        // Update estimated time based on mode and record count
+        function updateTimeEstimate() {
+            const useApi = document.getElementById('use-api').checked;
+            const rateLimit = parseFloat(document.getElementById('rate-limit').value) || 10;
+            
+            let seconds;
+            if (useApi) {
+                seconds = Math.ceil(currentRecordCount / rateLimit);
+            } else {
+                seconds = currentRecordCount * 5; // ~5 sec per record in browser mode
+            }
+            
+            let timeStr;
+            if (seconds < 60) {
+                timeStr = `~${seconds} sec`;
+            } else if (seconds < 3600) {
+                timeStr = `~${Math.ceil(seconds / 60)} min`;
+            } else {
+                timeStr = `~${(seconds / 3600).toFixed(1)} hrs`;
+            }
+            
+            document.getElementById('est-time-value').textContent = timeStr;
+        }
+
+        // Update estimate when mode or rate changes
+        useApiCheckbox.addEventListener('change', updateTimeEstimate);
+        document.getElementById('rate-limit').addEventListener('change', updateTimeEstimate);
+
         // File upload handler
         async function handleFile(file) {
             const formData = new FormData();
@@ -299,9 +409,11 @@
 
                 const data = await response.json();
                 currentJobId = data.job_id;
+                currentRecordCount = data.total_records;
 
                 document.getElementById('file-name').textContent = data.filename;
                 document.getElementById('record-count').textContent = `${data.total_records} records`;
+                updateTimeEstimate();
 
                 hideAllSections();
                 configSection.classList.remove('hidden');
