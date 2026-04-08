@@ -1,14 +1,17 @@
 """Command-line interface for VA Polling Validator."""
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+from rich.table import Table
 
-from .models import ValidatorConfig
-from .processor import run_validation
+from .models import ValidatorConfig, MatchStatus
+from .processor import run_validation, load_csv, save_results
 
 app = typer.Typer(
     name="va-validate",
@@ -58,6 +61,32 @@ def validate(
         "--checkpoint-interval",
         help="Save checkpoint every N records",
     ),
+    parallel: int = typer.Option(
+        1,
+        "--parallel", "-p",
+        help="Number of parallel browser instances (2-4 recommended for speed)",
+    ),
+    precinct_cache: bool = typer.Option(
+        False,
+        "--precinct-cache/--no-precinct-cache",
+        help="Only validate one address per precinct (much faster for large datasets)",
+    ),
+    use_api: bool = typer.Option(
+        False,
+        "--api",
+        help="Use Google Civic Information API (10x faster, requires API key)",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="GOOGLE_CIVIC_API_KEY",
+        help="Google Civic Information API key (or set GOOGLE_CIVIC_API_KEY env var)",
+    ),
+    rate_limit: float = typer.Option(
+        10.0,
+        "--rate-limit",
+        help="API requests per second (default 10, max recommended 25)",
+    ),
 ):
     """
     Validate polling places in a CSV against Virginia elections website.
@@ -66,11 +95,18 @@ def validate(
     
     Examples:
     
+        # Browser-based (slower but no API key needed)
         va-validate voters.csv
         
-        va-validate voters.csv -o results.csv --threshold 90
+        # API-based (10x faster, requires API key)
+        va-validate voters.csv --api --api-key YOUR_KEY
         
-        va-validate large_dataset.csv --delay 3 --checkpoint-interval 5
+        # Or set env var and just use --api
+        export GOOGLE_CIVIC_API_KEY=your_key
+        va-validate voters.csv --api
+        
+        # Browser with parallel workers
+        va-validate large_dataset.csv --parallel 3 --precinct-cache
     """
     config = ValidatorConfig(
         match_threshold=match_threshold,
@@ -80,14 +116,100 @@ def validate(
     )
     
     try:
-        asyncio.run(
-            run_validation(
-                input_path=input_file,
-                output_path=output_file,
-                config=config,
-                resume=not no_resume,
+        if use_api:
+            if not api_key:
+                api_key = os.environ.get("GOOGLE_CIVIC_API_KEY") or os.environ.get("CIVIC_API_KEY")
+            
+            if not api_key:
+                console.print("[red]Error: API key required. Use --api-key or set GOOGLE_CIVIC_API_KEY env var[/red]")
+                console.print("\nTo get an API key:")
+                console.print("1. Go to https://console.cloud.google.com/apis/credentials")
+                console.print("2. Create a project (if needed)")
+                console.print("3. Enable 'Google Civic Information API'")
+                console.print("4. Create an API key")
+                raise typer.Exit(1)
+            
+            from .api_validator import run_api_validation
+            
+            df, records = load_csv(input_file)
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            ) as progress_bar:
+                task = progress_bar.add_task(f"Validating {len(records)} records...", total=len(records))
+                
+                def update_progress(prog):
+                    progress_bar.update(task, completed=prog.completed_records)
+                
+                results = asyncio.run(
+                    run_api_validation(
+                        records=records,
+                        api_key=api_key,
+                        config=config,
+                        requests_per_second=rate_limit,
+                        concurrency=min(5, int(rate_limit)),
+                        progress_callback=update_progress,
+                    )
+                )
+            
+            out_path = output_file or input_file.parent / f"{input_file.stem}_validated.csv"
+            save_results(df, results, out_path)
+            
+            matched = sum(1 for r in results if r.status == MatchStatus.MATCH)
+            mismatched = sum(1 for r in results if r.status == MatchStatus.MISMATCH)
+            not_found = sum(1 for r in results if r.status == MatchStatus.NOT_FOUND)
+            errors = sum(1 for r in results if r.status == MatchStatus.ERROR)
+            
+            console.print("\n[bold green]Validation Complete![/bold green]\n")
+            
+            table = Table(title="Results Summary")
+            table.add_column("Status", style="cyan")
+            table.add_column("Count", style="magenta")
+            table.add_column("Percentage", style="green")
+            
+            total = len(results)
+            table.add_row("Matched", str(matched), f"{matched/total*100:.1f}%")
+            table.add_row("Mismatched", str(mismatched), f"{mismatched/total*100:.1f}%")
+            table.add_row("Not Found", str(not_found), f"{not_found/total*100:.1f}%")
+            table.add_row("Errors", str(errors), f"{errors/total*100:.1f}%")
+            
+            console.print(table)
+            console.print(f"\n[blue]Results saved to:[/blue] {out_path}")
+            
+        elif parallel > 1 or precinct_cache:
+            from .parallel_validator import run_parallel_validation
+            
+            console.print(f"\n[bold blue]VA Polling Place Validator (Parallel Mode)[/bold blue]")
+            console.print(f"Workers: {parallel} | Precinct Cache: {precinct_cache}\n")
+            
+            df, records = load_csv(input_file)
+            
+            results = asyncio.run(
+                run_parallel_validation(
+                    records=records,
+                    config=config,
+                    num_workers=parallel,
+                    use_precinct_cache=precinct_cache,
+                )
             )
-        )
+            
+            out_path = output_file or input_file.parent / f"{input_file.stem}_validated.csv"
+            save_results(df, results, out_path)
+            console.print(f"\n[green]Results saved to:[/green] {out_path}")
+        else:
+            asyncio.run(
+                run_validation(
+                    input_path=input_file,
+                    output_path=output_file,
+                    config=config,
+                    resume=not no_resume,
+                )
+            )
     except KeyboardInterrupt:
         console.print("\n[yellow]Validation interrupted. Progress has been saved.[/yellow]")
         console.print("Run the same command to resume from checkpoint.")

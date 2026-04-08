@@ -43,6 +43,9 @@ jobs: dict[str, dict] = {}
 class JobConfig(BaseModel):
     match_threshold: float = 85.0
     request_delay: float = 2.0
+    use_api: bool = False
+    api_key: Optional[str] = None
+    rate_limit: float = 10.0
 
 
 class JobStatus(BaseModel):
@@ -68,7 +71,7 @@ def update_job_progress(job_id: str, progress: ValidationProgress):
         jobs[job_id]["status"] = "running"
 
 
-async def run_validation_job(job_id: str, input_path: Path, config: ValidatorConfig):
+async def run_validation_job(job_id: str, input_path: Path, config: ValidatorConfig, job_config: JobConfig):
     """Background task to run validation."""
     try:
         jobs[job_id]["status"] = "running"
@@ -79,12 +82,39 @@ async def run_validation_job(job_id: str, input_path: Path, config: ValidatorCon
         def progress_callback(progress: ValidationProgress):
             update_job_progress(job_id, progress)
         
-        results, final_progress = await run_validation(
-            input_path=input_path,
-            output_path=output_path,
-            config=config,
-            progress_callback=progress_callback,
-        )
+        if job_config.use_api and job_config.api_key:
+            from va_polling_validator.api_validator import run_api_validation
+            
+            df, records = load_csv(input_path)
+            
+            results = await run_api_validation(
+                records=records,
+                api_key=job_config.api_key,
+                config=config,
+                requests_per_second=job_config.rate_limit,
+                concurrency=min(5, int(job_config.rate_limit)),
+                progress_callback=progress_callback,
+            )
+            
+            from va_polling_validator.processor import save_results
+            save_results(df, results, output_path)
+            
+            final_progress = ValidationProgress(
+                job_id=job_id,
+                total_records=len(records),
+                completed_records=len(results),
+                matched=sum(1 for r in results if r.status == MatchStatus.MATCH),
+                mismatched=sum(1 for r in results if r.status == MatchStatus.MISMATCH),
+                not_found=sum(1 for r in results if r.status == MatchStatus.NOT_FOUND),
+                errors=sum(1 for r in results if r.status == MatchStatus.ERROR),
+            )
+        else:
+            results, final_progress = await run_validation(
+                input_path=input_path,
+                output_path=output_path,
+                config=config,
+                progress_callback=progress_callback,
+            )
         
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["progress"] = final_progress
@@ -154,14 +184,18 @@ async def start_validation(
         headless=True,
     )
     
+    mode = "API" if config.use_api and config.api_key else "Browser"
+    jobs[job_id]["mode"] = mode
+    
     background_tasks.add_task(
         run_validation_job,
         job_id,
         Path(job["file_path"]),
         validator_config,
+        config,
     )
     
-    return {"job_id": job_id, "status": "started"}
+    return {"job_id": job_id, "status": "started", "mode": mode}
 
 
 @app.get("/api/status/{job_id}")
