@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+*.egg
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+.va_validator_checkpoints/
+webapp/backend/uploads/
+webapp/backend/results/
+*.log
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/

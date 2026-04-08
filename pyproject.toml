@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "va-polling-validator"
+version = "0.1.0"
+description = "Validate Virginia polling place assignments against official VA elections data"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "VA Polling Validator Team"}
+]
+dependencies = [
+    "playwright>=1.40.0",
+    "pandas>=2.0.0",
+    "rapidfuzz>=3.0.0",
+    "rich>=13.0.0",
+    "typer>=0.9.0",
+    "pydantic>=2.0.0",
+    "aiofiles>=23.0.0",
+]
+
+[project.optional-dependencies]
+webapp = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "python-multipart>=0.0.6",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.scripts]
+va-validate = "va_polling_validator.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
