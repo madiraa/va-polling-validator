@@ -77,7 +77,9 @@ async def run_validation_job(job_id: str, input_path: Path, config: ValidatorCon
         jobs[job_id]["status"] = "running"
         jobs[job_id]["start_time"] = datetime.now()
         
-        output_path = RESULTS_DIR / f"{job_id}_validated.csv"
+        # Output filename: original name + "_validated"
+        input_stem = input_path.stem  # filename without extension
+        output_path = RESULTS_DIR / f"{input_stem}_validated.csv"
         
         def progress_callback(progress: ValidationProgress):
             update_job_progress(job_id, progress)
@@ -238,10 +240,15 @@ async def download_results(job_id: str):
     if not result_file or not Path(result_file).exists():
         raise HTTPException(404, "Result file not found")
     
+    # Use original filename + "_validated" for download
+    original_filename = job.get("filename", "results.csv")
+    stem = Path(original_filename).stem
+    download_filename = f"{stem}_validated.csv"
+    
     return FileResponse(
         result_file,
         media_type="text/csv",
-        filename=f"{job_id}_validated.csv",
+        filename=download_filename,
     )
 
 
