@@ -6,6 +6,7 @@ import streamlit as st
 from pathlib import Path
 import sys
 import time
+from streamlit_local_storage import LocalStorage
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -105,11 +106,54 @@ st.markdown("Validate Virginia polling place assignments against official VA ele
 # API Key Section
 st.header("🔑 API Key")
 
+local_storage = LocalStorage()
+
+if "api_key_input" not in st.session_state:
+    st.session_state["api_key_input"] = ""
+if "remember_api_key" not in st.session_state:
+    st.session_state["remember_api_key"] = False
+
+stored_api_key = local_storage.getItem("va_validator_api_key", key="load_va_validator_api_key")
+if stored_api_key and not st.session_state["api_key_input"]:
+    st.session_state["api_key_input"] = stored_api_key
+    st.session_state["remember_api_key"] = True
+
 api_key = st.text_input(
     "Google Civic API Key",
     type="password",
+    key="api_key_input",
     help="Get a free key at console.cloud.google.com/apis/credentials"
 )
+
+remember_api_key = st.checkbox(
+    "Remember this API key on this device",
+    key="remember_api_key",
+    help="Stores the key in this browser only. It is not stored on the app server."
+)
+
+save_col, clear_col = st.columns(2)
+with save_col:
+    if st.button("Save Key", use_container_width=True):
+        if st.session_state["api_key_input"]:
+            local_storage.setItem(
+                "va_validator_api_key",
+                st.session_state["api_key_input"],
+                key="save_va_validator_api_key",
+            )
+            st.session_state["remember_api_key"] = True
+            st.success("API key saved to this browser.")
+        else:
+            st.warning("Enter an API key before saving it.")
+with clear_col:
+    if st.button("Forget Saved Key", use_container_width=True):
+        local_storage.setItem(
+            "va_validator_api_key",
+            "",
+            key="clear_va_validator_api_key",
+        )
+        st.session_state["api_key_input"] = ""
+        st.session_state["remember_api_key"] = False
+        st.success("Saved API key cleared from this browser.")
 
 if not api_key:
     st.info("👆 Enter your API key to enable fast validation")
@@ -174,6 +218,12 @@ if uploaded_file is not None:
         
         # Estimate time
         if api_key:
+            if remember_api_key:
+                local_storage.setItem(
+                    "va_validator_api_key",
+                    api_key,
+                    key="persist_va_validator_api_key",
+                )
             est_seconds = len(df) / rate_limit
             est_time = f"~{int(est_seconds)} seconds" if est_seconds < 60 else f"~{est_seconds/60:.1f} minutes"
             st.info(f"⚡ **API Mode:** Estimated time: {est_time}")
