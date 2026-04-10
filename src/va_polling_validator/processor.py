@@ -99,6 +99,9 @@ def save_results(
     df['validation_notes'] = df.index.map(
         lambda i: results_by_idx.get(i, ValidationResult(row_index=i, input_address='', input_polling_place='')).notes
     )
+    df['validation_error'] = df.index.map(
+        lambda i: results_by_idx.get(i, ValidationResult(row_index=i, input_address='', input_polling_place='')).error_message
+    )
     
     df.to_csv(output_path, index=False)
     return df

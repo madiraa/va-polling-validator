@@ -21,12 +21,24 @@ st.set_page_config(
 )
 
 # --- PASSWORD PROTECTION ---
+def get_app_password() -> str | None:
+    """Return the configured app password, or None when local auth is disabled."""
+    try:
+        return st.secrets["app_password"]
+    except Exception:
+        return None
+
+
 def check_password():
     """Returns True if the user has entered the correct password."""
+    app_password = get_app_password()
+
+    if not app_password:
+        return True
     
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        if st.session_state["password"] == st.secrets.get("app_password", "va-validator-2026"):
+        if st.session_state["password"] == app_password:
             st.session_state["password_correct"] = True
             del st.session_state["password"]  # Don't store password
         else:
@@ -263,6 +275,24 @@ if uploaded_file is not None:
                             ['reg_address', 'reg_city', 'polling_place_name', 'va_polling_place_returned', 'match_score']
                         ]
                         st.dataframe(mismatch_df, use_container_width=True)
+
+                    if errors > 0:
+                        st.subheader("🚨 Error Rows")
+                        error_columns = [
+                            'reg_address',
+                            'reg_city',
+                            'polling_place_name',
+                            'validation_status',
+                            'validation_notes',
+                            'validation_error',
+                        ]
+                        available_error_columns = [
+                            column for column in error_columns if column in result_df.columns
+                        ]
+                        error_df = result_df[result_df['validation_status'] == 'error'][
+                            available_error_columns
+                        ]
+                        st.dataframe(error_df, use_container_width=True)
                     
                     # Download button
                     st.divider()
