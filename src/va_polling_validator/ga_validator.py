@@ -322,13 +322,13 @@ async def run_ga_validation(
     records: list[GAVoterRecord],
     match_threshold: int = 85,
     requests_per_second: float = 1.0,
-    headless: bool = False,
     progress_callback: Optional[Callable[[Any], None]] = None,
 ) -> list[GAValidationResult]:
     """Validate all records. Each record gets its own browser context.
 
-    headless=False gives much better reCAPTCHA scores (recommended for local use).
-    headless=True is required on servers without a display but may be blocked more often.
+    The browser is launched non-headless but positioned off-screen so it is
+    invisible to the user. This is required because reCAPTCHA Enterprise detects
+    and blocks headless browsers.
     """
     from playwright.async_api import async_playwright
 
@@ -336,10 +336,19 @@ async def run_ga_validation(
     delay = max(2.0, 1.0 / requests_per_second)
 
     async with async_playwright() as pw:
+        # headless=True is detected by reCAPTCHA Enterprise and causes blocks.
+        # Instead we launch non-headless but position the window far off-screen
+        # so it never appears visibly to the user.
+        launch_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--window-position=-10000,-10000",
+            "--window-size=1280,900",
+        ]
         browser = await pw.chromium.launch(
-            headless=headless,
-            args=["--no-sandbox", "--disable-dev-shm-usage",
-                  "--disable-blink-features=AutomationControlled"],
+            headless=False,
+            args=launch_args,
         )
 
         for i, record in enumerate(records):
