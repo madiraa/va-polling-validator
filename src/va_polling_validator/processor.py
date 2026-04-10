@@ -29,6 +29,7 @@ def load_csv(file_path: Path) -> tuple[pd.DataFrame, list[VoterRecord]]:
     df = pd.read_csv(file_path)
     
     column_mapping = {
+        'reg_address_full': ['reg_address_full', 'registered_address_full', 'full_address'],
         'reg_address': ['reg_address', 'address', 'street_address', 'voter_address'],
         'reg_city': ['reg_city', 'city'],
         'reg_state': ['reg_state', 'state'],
@@ -46,20 +47,43 @@ def load_csv(file_path: Path) -> tuple[pd.DataFrame, list[VoterRecord]]:
                 normalized_cols[target] = matching[0]
                 break
     
-    required = ['reg_address', 'reg_city', 'reg_zip', 'polling_place_name']
-    missing = [r for r in required if r not in normalized_cols]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}. Available: {list(df.columns)}")
+    has_full_address = 'reg_address_full' in normalized_cols
+    has_split_address = all(
+        key in normalized_cols for key in ['reg_address', 'reg_city', 'reg_zip']
+    )
+    if not has_full_address and not has_split_address:
+        raise ValueError(
+            "Missing address columns. Provide either 'reg_address_full' or the split "
+            "columns 'reg_address', 'reg_city', and 'reg_zip'. "
+            f"Available: {list(df.columns)}"
+        )
+    if 'polling_place_name' not in normalized_cols:
+        raise ValueError(
+            f"Missing required column: 'polling_place_name'. Available: {list(df.columns)}"
+        )
     
     records = []
     for idx, row in df.iterrows():
         record = VoterRecord(
             row_index=idx,
             precinct_code=str(row.get(normalized_cols.get('precinct_code', ''), '')) or None,
-            reg_address=str(row[normalized_cols['reg_address']]),
-            reg_city=str(row[normalized_cols['reg_city']]),
+            reg_address_full=(
+                str(row[normalized_cols['reg_address_full']]).strip()
+                if has_full_address else None
+            ) or None,
+            reg_address=(
+                str(row[normalized_cols['reg_address']]).strip()
+                if 'reg_address' in normalized_cols else ''
+            ),
+            reg_city=(
+                str(row[normalized_cols['reg_city']]).strip()
+                if 'reg_city' in normalized_cols else ''
+            ),
             reg_state=str(row.get(normalized_cols.get('reg_state', ''), 'VA')) or 'VA',
-            reg_zip=str(row[normalized_cols['reg_zip']]),
+            reg_zip=(
+                str(row[normalized_cols['reg_zip']]).strip()
+                if 'reg_zip' in normalized_cols else ''
+            ),
             polling_place_name=str(row[normalized_cols['polling_place_name']]),
             polling_place_address=str(row.get(normalized_cols.get('polling_place_address', ''), '')) or None,
         )

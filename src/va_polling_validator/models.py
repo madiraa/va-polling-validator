@@ -19,16 +19,19 @@ class VoterRecord(BaseModel):
     """A voter record from the input CSV."""
     row_index: int
     precinct_code: Optional[str] = None
-    reg_address: str
-    reg_city: str
+    reg_address_full: Optional[str] = None
+    reg_address: str = ""
+    reg_city: str = ""
     reg_state: str = "VA"
-    reg_zip: str
+    reg_zip: str = ""
     polling_place_name: str
     polling_place_address: Optional[str] = None
     
     @property
     def full_address(self) -> str:
         """Construct full address for lookup."""
+        if self.reg_address_full:
+            return self.reg_address_full.strip()
         return f"{self.reg_address}, {self.reg_city}, {self.reg_state} {self.reg_zip}"
 
 

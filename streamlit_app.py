@@ -158,7 +158,7 @@ st.header("📁 Upload CSV File")
 uploaded_file = st.file_uploader(
     "Drop your CSV file here",
     type=['csv'],
-    help="Required columns: reg_address, reg_city, reg_zip, polling_place_name"
+    help="Required columns: reg_address_full and polling_place_name. Older split address columns are still supported."
 )
 
 if uploaded_file is not None:
