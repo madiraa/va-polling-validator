@@ -184,17 +184,23 @@ def _extract_from_tokens(tokens: list[str]) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Single-record validation
+# Single-record validation (reuses a shared page)
 # ---------------------------------------------------------------------------
 
 async def _validate_one(
-    browser,
+    page,
     record: GAVoterRecord,
     match_threshold: int,
 ) -> GAValidationResult:
-    """Open a fresh page for each record to avoid session state bleed."""
-    from playwright_stealth import Stealth
+    """
+    Validate one record using an already-open, already-stealthed page.
 
+    We navigate to the landing page fresh each time and clear storage so
+    session state from the previous voter doesn't bleed through.  Re-using
+    one page (rather than creating a new browser context per record) means
+    macOS never opens a second window — the single window is hidden once at
+    startup and stays hidden for the whole batch.
+    """
     result = GAValidationResult(
         row_index=record.row_index,
         first_initial=record.first_initial,
@@ -203,23 +209,14 @@ async def _validate_one(
         polling_place_name=record.polling_place_name,
     )
 
-    ctx = await browser.new_context(
-        viewport={"width": 1280, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-    )
-    page = await ctx.new_page()
-    # Apply stealth to mask Playwright automation fingerprint
-    await Stealth(navigator_webdriver=True).apply_stealth_async(page)
-
     try:
-        # Brief warm-up visit (improves reCAPTCHA session score)
+        # Hard-reset between records: blank page first so the Salesforce LWC
+        # teardown completes before the new load, preventing stale overlays.
         try:
-            await page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=10_000)
-            await asyncio.sleep(1.0)
+            await page.goto("about:blank", timeout=5_000)
+            await page.evaluate(
+                "() => { try { localStorage.clear(); sessionStorage.clear(); } catch(e){} }"
+            )
         except Exception:
             pass
 
@@ -229,6 +226,8 @@ async def _validate_one(
             wait_until="domcontentloaded",
             timeout=30_000,
         )
+        # Wait for the LWC to fully settle before interacting
+        await asyncio.sleep(1.5)
         await page.wait_for_selector("input", state="visible", timeout=15_000)
 
         # Convert date: YYYY-MM-DD → MM/DD/YYYY
@@ -292,7 +291,6 @@ async def _validate_one(
 
         # Check if we're still on the landing page (not found / failed)
         if "mvp-landing-page" in page.url or "mvp-dashboard" not in page.url:
-            # Could be not found or reCAPTCHA block
             page_text = (await page.inner_text("body")).lower()
             if "recaptcha" in page_text and "failed" in page_text:
                 result.status = "error"
@@ -303,8 +301,6 @@ async def _validate_one(
             return result
 
         # ---- We're on the dashboard — extract polling place ----
-        # The polling info is shown on 'My Registration Information' (default tab) or
-        # navigate to 'My Voting Location' for the dedicated section.
         await asyncio.sleep(1)
         try:
             voting_tab = page.get_by_role("link", name="My Voting Location")
@@ -312,7 +308,7 @@ async def _validate_one(
                 await voting_tab.click(timeout=5_000)
                 await asyncio.sleep(2)
         except Exception:
-            pass  # polling info may already be visible on the default tab
+            pass
 
         tokens: list[str] = await page.evaluate(_SHADOW_TEXT_JS)
         place = _extract_from_tokens(tokens)
@@ -344,9 +340,6 @@ async def _validate_one(
     except Exception as exc:
         result.status = "error"
         result.error = f"{type(exc).__name__}: {exc}"
-
-    finally:
-        await ctx.close()
 
     return result
 
@@ -393,11 +386,15 @@ async def run_ga_validation(
     headless = not is_mac
 
     # Start the hider before the browser so it catches the very first window.
+    # Because we now reuse one window for the whole batch, it only needs to
+    # hide once — there are no per-record window flashes.
     minimizer_stop: Optional[threading.Event] = None
     if is_mac:
         minimizer_stop = _start_chromium_minimizer()
 
     async with async_playwright() as pw:
+        from playwright_stealth import Stealth
+
         browser = await pw.chromium.launch(
             headless=headless,
             args=[
@@ -408,9 +405,29 @@ async def run_ga_validation(
             ],
         )
 
+        # One context + page shared across all records.
+        # Reusing the session also gives reCAPTCHA a better trust signal over time.
+        ctx = await browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        )
+        page = await ctx.new_page()
+        await Stealth(navigator_webdriver=True).apply_stealth_async(page)
+
+        # One-time warm-up visit to seed the reCAPTCHA session score.
+        try:
+            await page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=10_000)
+            await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
         try:
             for i, record in enumerate(records):
-                result = await _validate_one(browser, record, match_threshold)
+                result = await _validate_one(page, record, match_threshold)
                 results.append(result)
 
                 if progress_callback:
@@ -423,6 +440,7 @@ async def run_ga_validation(
                 if i < len(records) - 1:
                     await asyncio.sleep(delay)
         finally:
+            await ctx.close()
             await browser.close()
             if minimizer_stop:
                 minimizer_stop.set()
