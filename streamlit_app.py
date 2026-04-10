@@ -30,51 +30,32 @@ def get_app_password() -> str | None:
         return None
 
 
-def check_password():
-    """Returns True if the user has entered the correct password."""
+def check_password() -> bool:
+    """Show password gate. Returns True only when access is granted."""
     app_password = get_app_password()
 
     if not app_password:
         return True
-    
-    def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        entered = st.session_state.get("password", "")
+
+    if st.session_state.get("password_correct"):
+        return True
+
+    st.markdown("## 🔐 Access Required")
+    entered = st.text_input(
+        "Enter password to access the validator:",
+        type="password",
+    )
+
+    if st.button("Submit", type="primary"):
         if entered == app_password:
             st.session_state["password_correct"] = True
+            st.rerun()
         else:
-            st.session_state["password_correct"] = False
-        # Clear after reading so the raw value isn't kept in state
-        if "password" in st.session_state:
-            del st.session_state["password"]
+            st.error("❌ Incorrect password. Please try again.")
 
-    if "password_correct" not in st.session_state:
-        # First run, show input for password
-        st.markdown("## 🔐 Access Required")
-        st.text_input(
-            "Enter password to access the validator:",
-            type="password",
-            on_change=password_entered,
-            key="password",
-        )
-        st.markdown("*Contact your administrator for access.*")
-        return False
-    
-    elif not st.session_state["password_correct"]:
-        # Password incorrect, show input + error
-        st.markdown("## 🔐 Access Required")
-        st.text_input(
-            "Enter password to access the validator:",
-            type="password",
-            on_change=password_entered,
-            key="password",
-        )
-        st.error("❌ Incorrect password. Please try again.")
-        return False
-    
-    else:
-        # Password correct
-        return True
+    st.markdown("*Contact your administrator for access.*")
+    return False
+
 
 # Check password before showing anything else
 if not check_password():
