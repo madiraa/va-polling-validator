@@ -220,29 +220,30 @@ async def _validate_one(
         except Exception:
             pass
 
-        # Navigate to GA MVP landing page
+        # Navigate to GA MVP landing page; wait for first input to be ready
+        # rather than a fixed sleep — exits as soon as the LWC is interactive.
         await page.goto(
             "https://mvp.sos.ga.gov/s/mvp-landing-page",
             wait_until="domcontentloaded",
             timeout=30_000,
         )
-        # Wait for the LWC to fully settle before interacting
-        await asyncio.sleep(1.5)
         await page.wait_for_selector("input", state="visible", timeout=15_000)
+        # Brief pause so LWC event-listeners are fully wired up (was 1.5 s)
+        await asyncio.sleep(0.5)
 
         # Convert date: YYYY-MM-DD → MM/DD/YYYY
         dob_date = datetime.strptime(record.date_of_birth, "%Y-%m-%d")
         dob_formatted = dob_date.strftime("%m/%d/%Y")
 
-        # ---- Fill form ----
+        # ---- Fill form (tighter delays — still human-like) ----
         await page.locator("input").nth(0).fill(record.first_initial.strip()[:1])
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.15)
         await page.locator("input").nth(1).fill(record.last_name.strip())
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.15)
 
         # County: Salesforce LIGHTNING-COMBOBOX (not a native <select>)
         await page.get_by_role("combobox").click(timeout=5_000)
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.3)
         county_upper = record.reg_county.strip().upper()
         county_title = record.reg_county.strip().title()
         clicked_county = False
@@ -258,19 +259,28 @@ async def _validate_one(
             result.error = f"Could not select county '{record.reg_county}' from dropdown"
             return result
 
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.15)
         await page.locator("input").nth(2).fill(dob_formatted)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.15)
 
-        # ---- Human-like pause before submit ----
+        # ---- Human-like pause before submit (was 1.0 s) ----
         for x, y in [(300, 400), (500, 350), (400, 550)]:
             await page.mouse.move(x, y)
-            await asyncio.sleep(0.15)
-        await asyncio.sleep(1.0)
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
 
-        # ---- Submit ----
+        # ---- Submit, then wait for navigation rather than a fixed sleep ----
         await page.locator("button", has_text="SUBMIT").click()
-        await asyncio.sleep(3)
+
+        # Wait for either the dashboard URL or a reCAPTCHA iframe to appear.
+        # This exits as soon as the page transitions — usually 1–3 s, not always 3 s.
+        try:
+            await page.wait_for_url(
+                lambda url: "mvp-dashboard" in url or "mvp-landing-page" not in url,
+                timeout=12_000,
+            )
+        except Exception:
+            pass  # fall through to reCAPTCHA / not-found checks below
 
         # ---- Handle reCAPTCHA v2 checkbox if it appears ----
         anchor_frames = [f for f in page.frames if "anchor" in f.url and "recaptcha" in f.url]
@@ -281,13 +291,11 @@ async def _validate_one(
                     el = cf.locator(sel)
                     if await el.count() > 0:
                         await el.first.click(timeout=6_000)
+                        # Must wait for reCAPTCHA image challenge to resolve
                         await asyncio.sleep(8)
                         break
                 except Exception:
                     pass
-
-        # Wait for dashboard URL
-        await asyncio.sleep(3)
 
         # Check if we're still on the landing page (not found / failed)
         if "mvp-landing-page" in page.url or "mvp-dashboard" not in page.url:
@@ -300,15 +308,33 @@ async def _validate_one(
             result.notes = "Voter not found or form submission failed"
             return result
 
-        # ---- We're on the dashboard — extract polling place ----
-        await asyncio.sleep(1)
+        # ---- We're on the dashboard — wait for content, then extract ----
         try:
             voting_tab = page.get_by_role("link", name="My Voting Location")
             if await voting_tab.count() > 0:
                 await voting_tab.click(timeout=5_000)
-                await asyncio.sleep(2)
         except Exception:
             pass
+
+        # Wait for the precinct name token to appear rather than sleeping
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const texts = [];
+                    function t(n) {
+                        if (n.shadowRoot) t(n.shadowRoot);
+                        n.childNodes.forEach(c => {
+                            if (c.nodeType === 3) texts.push(c.textContent.toLowerCase());
+                            else if (c.nodeType === 1) t(c);
+                        });
+                    }
+                    t(document.body);
+                    return texts.some(s => s.includes('precinct name'));
+                }""",
+                timeout=10_000,
+            )
+        except Exception:
+            pass  # extract anyway; _extract_from_tokens handles missing data
 
         tokens: list[str] = await page.evaluate(_SHADOW_TEXT_JS)
         place = _extract_from_tokens(tokens)
