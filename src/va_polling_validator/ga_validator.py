@@ -42,9 +42,11 @@ def _start_chromium_minimizer() -> Optional[threading.Event]:
 
     # "set visible … false" hides the whole app (equivalent to Cmd+H) —
     # no Dock animation, no visible flash. Much cleaner than miniaturized.
+    # Playwright's bundled Chromium appears as "Google Chrome for Testing"
+    # in macOS System Events (NOT "Chromium").
     _SCRIPT = (
         'tell application "System Events"\n'
-        '    repeat with p in (processes whose name is "Chromium")\n'
+        '    repeat with p in (processes whose name is "Google Chrome for Testing")\n'
         '        try\n'
         '            set visible of p to false\n'
         '        end try\n'
