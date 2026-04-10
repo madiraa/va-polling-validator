@@ -366,6 +366,7 @@ elif is_ga:
                             records=ga_records,
                             match_threshold=ga_match_threshold,
                             requests_per_second=ga_rate_limit,
+                            headless=False,  # visible browser passes reCAPTCHA more reliably
                             progress_callback=update_ga_progress,
                         )
 
