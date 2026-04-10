@@ -1,16 +1,21 @@
-"""Georgia polling place validator — Playwright + playwright-stealth.
+"""Georgia polling place validator.
 
-Workflow per record:
-  1. Navigate to https://mvp.sos.ga.gov/s/mvp-landing-page
-  2. Fill the form (First Initial, Last Name, County combobox, Date of Birth)
-  3. Click SUBMIT; handle reCAPTCHA v2 checkbox if it appears
-  4. On the voter dashboard, extract polling place from shadow DOM text
-  5. Fuzzy-compare against polling_place_name in the CSV
+Two validation paths — chosen automatically per record:
+
+  API path  (fast, ~0.1 s/record)
+    Requires: reg_address column in CSV + Google Civic API key.
+    Uses the same Google Civic voterInfoQuery endpoint as the VA validator.
+    Falls back to browser if the API returns no polling place (e.g. outside
+    an active election window or address not matched).
+
+  Browser path  (slow, ~20 s/record)
+    Always available.  Playwright automates the GA My Voter Page portal
+    (https://mvp.sos.ga.gov/s/mvp-landing-page) using first_initial,
+    last_name, reg_county, date_of_birth.
 
 Notes:
-  • Run WITHOUT a VPN — VPN IPs get low reCAPTCHA scores.
-  • Rate: 1 req/sec default; don't increase much or reCAPTCHA may block more.
-  • Results include ga_polling_place_returned and ga_polling_address_returned.
+  • Run WITHOUT a VPN — VPN IPs get low reCAPTCHA scores on the browser path.
+  • Results carry a `validation_method` field: "api" or "browser".
 """
 
 import asyncio
@@ -81,9 +86,10 @@ class GAVoterRecord:
     first_initial: str
     last_name: str
     reg_county: str
-    date_of_birth: str          # YYYY-MM-DD (as stored in the CSV)
-    polling_place_name: str     # expected value to validate
+    date_of_birth: str              # YYYY-MM-DD (as stored in the CSV)
+    polling_place_name: str         # expected value to validate
     polling_place_address_full: Optional[str] = None
+    reg_address: Optional[str] = None   # voter residential address (enables API path)
     row_index: int = 0
 
 
@@ -96,10 +102,11 @@ class GAValidationResult:
     polling_place_name: str
     ga_polling_place_returned: Optional[str] = None
     ga_polling_address_returned: Optional[str] = None
-    status: str = "error"       # match | mismatch | not_found | error
+    status: str = "error"           # match | mismatch | not_found | error
     match_score: float = 0.0
     notes: str = ""
     error: str = ""
+    validation_method: str = "browser"  # "api" or "browser"
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +188,58 @@ def _extract_from_tokens(tokens: list[str]) -> Optional[dict]:
     if place_name:
         return {"name": place_name, "address": place_address}
     return None
+
+
+# ---------------------------------------------------------------------------
+# API path — Google Civic Information API (fast, requires reg_address)
+# ---------------------------------------------------------------------------
+
+async def _validate_one_api(
+    validator,          # CivicAPIValidator instance (already started)
+    record: GAVoterRecord,
+    match_threshold: int,
+) -> GAValidationResult:
+    """Validate one GA record via the Google Civic voterInfoQuery endpoint."""
+    result = GAValidationResult(
+        row_index=record.row_index,
+        first_initial=record.first_initial,
+        last_name=record.last_name,
+        reg_county=record.reg_county,
+        polling_place_name=record.polling_place_name,
+        validation_method="api",
+    )
+
+    name, address, error = await validator.lookup_polling_place(record.reg_address)
+
+    if error:
+        result.status = "error"
+        result.error = f"API: {error}"
+        return result
+
+    if not name:
+        result.status = "not_found"
+        result.notes = "API returned no polling place (outside election window or address not matched)"
+        return result
+
+    result.ga_polling_place_returned = name
+    result.ga_polling_address_returned = address
+
+    score = fuzz.token_sort_ratio(
+        record.polling_place_name.upper(),
+        name.upper(),
+    )
+    result.match_score = float(score)
+    if score >= match_threshold:
+        result.status = "match"
+        result.notes = f"Match score: {score}% (API)"
+    else:
+        result.status = "mismatch"
+        result.notes = (
+            f"Expected: '{record.polling_place_name}' | "
+            f"Got: '{name}' | Score: {score}% (API)"
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +434,7 @@ async def _validate_one(
 # ---------------------------------------------------------------------------
 
 class _Progress:
-    def __init__(self, completed, matched, mismatched, not_found, errors):
+    def __init__(self, completed=0, matched=0, mismatched=0, not_found=0, errors=0):
         self.completed_records = completed
         self.matched = matched
         self.mismatched = mismatched
@@ -391,87 +450,121 @@ async def run_ga_validation(
     records: list[GAVoterRecord],
     match_threshold: int = 85,
     requests_per_second: float = 1.0,
+    api_key: Optional[str] = None,
     progress_callback: Optional[Callable[[Any], None]] = None,
 ) -> list[GAValidationResult]:
-    """Validate all records. Each record gets its own browser context.
+    """Validate all GA records.
 
-    reCAPTCHA Enterprise detects and blocks headless Chrome via the WebGL
-    SwiftShader renderer fingerprint.  We therefore run non-headless, but on
-    macOS we immediately minimise every Playwright Chromium window via
-    AppleScript so the user never sees it.  On Linux/cloud the browser is
-    launched headless (reCAPTCHA is less strict there, or Xvfb handles it).
+    Phase 1 — Google Civic API (fast, ~0.1 s/record):
+        Runs for records that have a reg_address AND an api_key is supplied.
+        Records where the API returns nothing are passed to Phase 2.
+
+    Phase 2 — Browser automation (slow, ~20 s/record):
+        Runs for all remaining records (no address, no key, or API miss).
+        reCAPTCHA Enterprise detects headless Chrome, so on macOS we run
+        non-headless and hide the window immediately via AppleScript.
     """
     from playwright.async_api import async_playwright
 
-    results: list[GAValidationResult] = []
+    results_map: dict[int, GAValidationResult] = {}
+    browser_records: list[GAVoterRecord] = []
     delay = max(2.0, 1.0 / requests_per_second)
 
-    # On macOS, run non-headless (passes reCAPTCHA) but hide via minimize loop.
-    # On Linux/cloud, headless is fine.
-    is_mac = platform.system() == "Darwin"
-    headless = not is_mac
+    def _emit_progress(completed_so_far: int):
+        if not progress_callback:
+            return
+        all_so_far = list(results_map.values())
+        progress_callback(_Progress(
+            completed=completed_so_far,
+            matched=sum(1 for r in all_so_far if r.status == "match"),
+            mismatched=sum(1 for r in all_so_far if r.status == "mismatch"),
+            not_found=sum(1 for r in all_so_far if r.status == "not_found"),
+            errors=sum(1 for r in all_so_far if r.status == "error"),
+        ))
 
-    # Start the hider before the browser so it catches the very first window.
-    # Because we now reuse one window for the whole batch, it only needs to
-    # hide once — there are no per-record window flashes.
-    minimizer_stop: Optional[threading.Event] = None
-    if is_mac:
-        minimizer_stop = _start_chromium_minimizer()
+    # ------------------------------------------------------------------
+    # Phase 1: API
+    # ------------------------------------------------------------------
+    if api_key:
+        from va_polling_validator.api_validator import CivicAPIValidator
 
-    async with async_playwright() as pw:
-        from playwright_stealth import Stealth
+        api_eligible = [r for r in records if r.reg_address]
+        no_addr = [r for r in records if not r.reg_address]
 
-        browser = await pw.chromium.launch(
-            headless=headless,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--window-size=1280,900",
-            ],
-        )
+        if api_eligible:
+            async with CivicAPIValidator(api_key, requests_per_second=10.0) as validator:
+                for i, record in enumerate(api_eligible):
+                    result = await _validate_one_api(validator, record, match_threshold)
+                    results_map[record.row_index] = result
+                    _emit_progress(len(results_map))
 
-        # One context + page shared across all records.
-        # Reusing the session also gives reCAPTCHA a better trust signal over time.
-        ctx = await browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-        )
-        page = await ctx.new_page()
-        await Stealth(navigator_webdriver=True).apply_stealth_async(page)
+                    # If API couldn't find it, queue for browser fallback
+                    if result.status in ("not_found", "error"):
+                        browser_records.append(record)
 
-        # One-time warm-up visit to seed the reCAPTCHA session score.
-        try:
-            await page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=10_000)
-            await asyncio.sleep(1.0)
-        except Exception:
-            pass
+        browser_records.extend(no_addr)
+    else:
+        browser_records = list(records)
 
-        try:
-            for i, record in enumerate(records):
-                result = await _validate_one(page, record, match_threshold)
-                results.append(result)
+    # ------------------------------------------------------------------
+    # Phase 2: Browser (only launched if needed)
+    # ------------------------------------------------------------------
+    if browser_records:
 
-                if progress_callback:
-                    matched = sum(1 for r in results if r.status == "match")
-                    mismatched = sum(1 for r in results if r.status == "mismatch")
-                    not_found = sum(1 for r in results if r.status == "not_found")
-                    errors = sum(1 for r in results if r.status == "error")
-                    progress_callback(_Progress(i + 1, matched, mismatched, not_found, errors))
+        is_mac = platform.system() == "Darwin"
+        headless = not is_mac
 
-                if i < len(records) - 1:
-                    await asyncio.sleep(delay)
-        finally:
-            await ctx.close()
-            await browser.close()
-            if minimizer_stop:
-                minimizer_stop.set()
+        minimizer_stop: Optional[threading.Event] = None
+        if is_mac:
+            minimizer_stop = _start_chromium_minimizer()
 
-    return results
+        async with async_playwright() as pw:
+            from playwright_stealth import Stealth
+
+            browser = await pw.chromium.launch(
+                headless=headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--window-size=1280,900",
+                ],
+            )
+
+            ctx = await browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            )
+            page = await ctx.new_page()
+            await Stealth(navigator_webdriver=True).apply_stealth_async(page)
+
+            # One-time warm-up visit to seed the reCAPTCHA session score.
+            try:
+                await page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=10_000)
+                await asyncio.sleep(1.0)
+            except Exception:
+                pass
+
+            try:
+                for i, record in enumerate(browser_records):
+                    result = await _validate_one(page, record, match_threshold)
+                    results_map[record.row_index] = result
+                    _emit_progress(len(results_map))
+
+                    if i < len(browser_records) - 1:
+                        await asyncio.sleep(delay)
+            finally:
+                await ctx.close()
+                await browser.close()
+                if minimizer_stop:
+                    minimizer_stop.set()
+
+    # Return results in original row order
+    return [results_map[r.row_index] for r in records if r.row_index in results_map]
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +584,9 @@ def load_ga_csv(path) -> tuple:
     if missing:
         raise ValueError(f"GA CSV is missing required columns: {missing}")
 
+    # reg_address is optional — enables faster Google Civic API path
+    has_address = "reg_address" in df.columns
+
     records: list[GAVoterRecord] = []
     for idx, row in df.iterrows():
         records.append(GAVoterRecord(
@@ -500,6 +596,7 @@ def load_ga_csv(path) -> tuple:
             date_of_birth=str(row["date_of_birth"]).strip(),
             polling_place_name=str(row["polling_place_name"]).strip(),
             polling_place_address_full=str(row.get("polling_place_address_full", "")).strip() or None,
+            reg_address=str(row["reg_address"]).strip() if has_address else None,
             row_index=int(idx),
         ))
 
@@ -514,7 +611,7 @@ def save_ga_results(raw_df, results: list[GAValidationResult], output_path) -> "
     result_map = {r.row_index: r for r in results}
     for col in ["ga_polling_place_returned", "ga_polling_address_returned",
                 "validation_status", "match_score", "validation_notes",
-                "validation_error", "matches_ga"]:
+                "validation_error", "matches_ga", "validation_method"]:
         raw_df[col] = None
 
     for idx in raw_df.index:
@@ -528,6 +625,7 @@ def save_ga_results(raw_df, results: list[GAValidationResult], output_path) -> "
         raw_df.at[idx, "validation_notes"] = r.notes
         raw_df.at[idx, "validation_error"] = r.error
         raw_df.at[idx, "matches_ga"] = 1 if r.status == "match" else 0
+        raw_df.at[idx, "validation_method"] = r.validation_method
 
     raw_df.to_csv(Path(output_path), index=False)
     return raw_df

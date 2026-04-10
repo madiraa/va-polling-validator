@@ -283,14 +283,33 @@ via <a href="https://developers.google.com/civic-information" target="_blank">Go
 
 elif is_ga:
     st.markdown(
-        "Validating against **Georgia My Voter Page** "
-        "([mvp.sos.ga.gov](https://mvp.sos.ga.gov/s/mvp-landing-page)) "
-        "via browser automation. No API key required."
+        "Validating against **Georgia Secretary of State** voter records. "
+        "Two paths are available — the faster one is chosen automatically."
     )
-    st.info(
-        "**Note:** Georgia validation uses browser automation (Playwright) rather than "
-        "an API, so it runs at ~1 record/second. For large datasets, expect a longer wait."
+
+    # --- API Key (optional) ---
+    st.header("🔑 API Key *(optional but recommended)*")
+    if "ga_api_key_input" not in st.session_state:
+        st.session_state["ga_api_key_input"] = ""
+
+    ga_api_key = st.text_input(
+        "Google Civic API Key",
+        type="password",
+        key="ga_api_key_input",
+        help="If your CSV has a reg_address column, the API path runs at ~10 records/sec. "
+             "Without a key (or without addresses), browser automation is used instead.",
     )
+
+    if ga_api_key:
+        st.success(
+            "⚡ **API mode active** — records with `reg_address` will use the Google Civic API "
+            "(~10×  faster). Records without an address fall back to browser automation."
+        )
+    else:
+        st.info(
+            "🌐 **Browser mode** — validation will use the GA My Voter Page portal "
+            "(~20 s/record). Add an API key + `reg_address` column to speed this up significantly."
+        )
 
     # --- Settings ---
     st.header("⚙️ Settings")
@@ -313,8 +332,9 @@ elif is_ga:
     # --- Upload ---
     st.header("📁 Upload CSV File")
     st.caption(
-        "Required columns: `first_initial`, `last_name`, `reg_county`, "
-        "`date_of_birth` (YYYY-MM-DD), `polling_place_name`"
+        "Required: `first_initial`, `last_name`, `reg_county`, "
+        "`date_of_birth` (YYYY-MM-DD), `polling_place_name`  •  "
+        "Optional: `reg_address` (enables fast API path when API key is provided)"
     )
 
     ga_uploaded = st.file_uploader(
@@ -333,13 +353,20 @@ elif is_ga:
             with st.expander("Preview data"):
                 st.dataframe(df_preview.head(10), use_container_width=True)
 
-            est_seconds = len(df_preview) / ga_rate_limit
+            has_address_col = "reg_address" in [c.lower() for c in df_preview.columns]
+            n = len(df_preview)
+            if ga_api_key and has_address_col:
+                est_seconds = n / 10.0   # API path
+                mode_label = "⚡ API + Browser fallback"
+            else:
+                est_seconds = n * 20     # browser only
+                mode_label = "🌐 Browser"
             est_time = (
                 f"~{int(est_seconds)} seconds"
                 if est_seconds < 60
                 else f"~{est_seconds / 60:.1f} minutes"
             )
-            st.info(f"🕐 **Browser Mode:** Estimated time: {est_time}")
+            st.info(f"**{mode_label}:** Estimated time: {est_time}")
 
             if st.button("🚀 Start GA Validation", type="primary", use_container_width=True):
                 temp_path = Path(f"/tmp/{ga_uploaded.name}")
@@ -366,6 +393,7 @@ elif is_ga:
                             records=ga_records,
                             match_threshold=ga_match_threshold,
                             requests_per_second=ga_rate_limit,
+                            api_key=ga_api_key or None,
                             progress_callback=update_ga_progress,
                         )
 
