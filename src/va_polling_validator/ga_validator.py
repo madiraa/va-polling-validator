@@ -40,11 +40,13 @@ def _start_chromium_minimizer() -> Optional[threading.Event]:
     if platform.system() != "Darwin":
         return None
 
+    # "set visible … false" hides the whole app (equivalent to Cmd+H) —
+    # no Dock animation, no visible flash. Much cleaner than miniaturized.
     _SCRIPT = (
         'tell application "System Events"\n'
         '    repeat with p in (processes whose name is "Chromium")\n'
         '        try\n'
-        '            set miniaturized of every window of p to true\n'
+        '            set visible of p to false\n'
         '        end try\n'
         '    end repeat\n'
         'end tell'
@@ -53,14 +55,15 @@ def _start_chromium_minimizer() -> Optional[threading.Event]:
     stop_evt = threading.Event()
 
     def _loop():
-        time.sleep(1.5)          # wait for the first window to appear
+        # No initial sleep — start hiding immediately so the window never
+        # has a chance to appear on screen.
         while not stop_evt.is_set():
             try:
                 subprocess.run(["osascript", "-e", _SCRIPT],
                                capture_output=True, timeout=8)
             except Exception:
                 pass
-            time.sleep(0.4)
+            time.sleep(0.3)
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
@@ -387,7 +390,10 @@ async def run_ga_validation(
     is_mac = platform.system() == "Darwin"
     headless = not is_mac
 
+    # Start the hider before the browser so it catches the very first window.
     minimizer_stop: Optional[threading.Event] = None
+    if is_mac:
+        minimizer_stop = _start_chromium_minimizer()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -399,9 +405,6 @@ async def run_ga_validation(
                 "--window-size=1280,900",
             ],
         )
-
-        if is_mac:
-            minimizer_stop = _start_chromium_minimizer()
 
         try:
             for i, record in enumerate(records):
