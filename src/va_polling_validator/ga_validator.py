@@ -579,6 +579,18 @@ def load_ga_csv(path) -> tuple:
     df = pd.read_csv(Path(path))
     df.columns = df.columns.str.lower()
 
+    # Accept reg_address_full as a synonym for reg_address
+    if "reg_address_full" in df.columns and "reg_address" not in df.columns:
+        df = df.rename(columns={"reg_address_full": "reg_address"})
+
+    # reg_county can be derived from the TargetSmart precinct code (GA_COUNTY_PRECINCT)
+    if "reg_county" not in df.columns:
+        precinct_col = next(
+            (c for c in df.columns if "precinct_code" in c or "national_precinct" in c), None
+        )
+        if precinct_col:
+            df["reg_county"] = df[precinct_col].str.split("_").str[1]
+
     required = {"first_initial", "last_name", "reg_county", "date_of_birth", "polling_place_name"}
     missing = required - set(df.columns)
     if missing:
