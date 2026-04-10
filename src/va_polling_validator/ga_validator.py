@@ -14,12 +14,57 @@ Notes:
 """
 
 import asyncio
+import platform
 import re
+import subprocess
+import threading
+import time
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Callable, Any
 
 from rapidfuzz import fuzz
+
+
+# ---------------------------------------------------------------------------
+# macOS: keep Playwright's Chromium window minimised in the background
+# ---------------------------------------------------------------------------
+
+def _start_chromium_minimizer() -> Optional[threading.Event]:
+    """
+    On macOS, spin up a background thread that continuously minimises every
+    window belonging to the "Chromium" process (Playwright's bundled binary,
+    distinct from the user's "Google Chrome").  Returns a stop-event so the
+    caller can halt the thread cleanly, or None on non-macOS systems.
+    """
+    if platform.system() != "Darwin":
+        return None
+
+    _SCRIPT = (
+        'tell application "System Events"\n'
+        '    repeat with p in (processes whose name is "Chromium")\n'
+        '        try\n'
+        '            set miniaturized of every window of p to true\n'
+        '        end try\n'
+        '    end repeat\n'
+        'end tell'
+    )
+
+    stop_evt = threading.Event()
+
+    def _loop():
+        time.sleep(1.5)          # wait for the first window to appear
+        while not stop_evt.is_set():
+            try:
+                subprocess.run(["osascript", "-e", _SCRIPT],
+                               capture_output=True, timeout=8)
+            except Exception:
+                pass
+            time.sleep(0.4)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    return stop_evt
 
 
 # ---------------------------------------------------------------------------
@@ -326,46 +371,56 @@ async def run_ga_validation(
 ) -> list[GAValidationResult]:
     """Validate all records. Each record gets its own browser context.
 
-    The browser is launched non-headless but positioned off-screen so it is
-    invisible to the user. This is required because reCAPTCHA Enterprise detects
-    and blocks headless browsers.
+    reCAPTCHA Enterprise detects and blocks headless Chrome via the WebGL
+    SwiftShader renderer fingerprint.  We therefore run non-headless, but on
+    macOS we immediately minimise every Playwright Chromium window via
+    AppleScript so the user never sees it.  On Linux/cloud the browser is
+    launched headless (reCAPTCHA is less strict there, or Xvfb handles it).
     """
     from playwright.async_api import async_playwright
 
     results: list[GAValidationResult] = []
     delay = max(2.0, 1.0 / requests_per_second)
 
+    # On macOS, run non-headless (passes reCAPTCHA) but hide via minimize loop.
+    # On Linux/cloud, headless is fine.
+    is_mac = platform.system() == "Darwin"
+    headless = not is_mac
+
+    minimizer_stop: Optional[threading.Event] = None
+
     async with async_playwright() as pw:
-        # headless=True is detected by reCAPTCHA Enterprise and causes blocks.
-        # Instead we launch non-headless but position the window far off-screen
-        # so it never appears visibly to the user.
-        launch_args = [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--window-position=-10000,-10000",
-            "--window-size=1280,900",
-        ]
         browser = await pw.chromium.launch(
-            headless=False,
-            args=launch_args,
+            headless=headless,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--window-size=1280,900",
+            ],
         )
 
-        for i, record in enumerate(records):
-            result = await _validate_one(browser, record, match_threshold)
-            results.append(result)
+        if is_mac:
+            minimizer_stop = _start_chromium_minimizer()
 
-            if progress_callback:
-                matched = sum(1 for r in results if r.status == "match")
-                mismatched = sum(1 for r in results if r.status == "mismatch")
-                not_found = sum(1 for r in results if r.status == "not_found")
-                errors = sum(1 for r in results if r.status == "error")
-                progress_callback(_Progress(i + 1, matched, mismatched, not_found, errors))
+        try:
+            for i, record in enumerate(records):
+                result = await _validate_one(browser, record, match_threshold)
+                results.append(result)
 
-            if i < len(records) - 1:
-                await asyncio.sleep(delay)
+                if progress_callback:
+                    matched = sum(1 for r in results if r.status == "match")
+                    mismatched = sum(1 for r in results if r.status == "mismatch")
+                    not_found = sum(1 for r in results if r.status == "not_found")
+                    errors = sum(1 for r in results if r.status == "error")
+                    progress_callback(_Progress(i + 1, matched, mismatched, not_found, errors))
 
-        await browser.close()
+                if i < len(records) - 1:
+                    await asyncio.sleep(delay)
+        finally:
+            await browser.close()
+            if minimizer_stop:
+                minimizer_stop.set()
 
     return results
 
