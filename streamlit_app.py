@@ -39,11 +39,14 @@ def check_password():
     
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        if st.session_state["password"] == app_password:
+        entered = st.session_state.get("password", "")
+        if entered == app_password:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
         else:
             st.session_state["password_correct"] = False
+        # Clear after reading so the raw value isn't kept in state
+        if "password" in st.session_state:
+            del st.session_state["password"]
 
     if "password_correct" not in st.session_state:
         # First run, show input for password
